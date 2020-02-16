@@ -1,0 +1,21 @@
+[gd_scene load_steps=3 format=2]
+
+[ext_resource path="res://Tiles.meshlib" type="MeshLibrary" id=1]
+
+[sub_resource type="Environment" id=1]
+ambient_light_color = Color( 1, 1, 1, 1 )
+
+[node name="Spatial" type="Spatial"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource( 1 )
+
+[node name="GridMap" type="GridMap" parent="."]
+mesh_library = ExtResource( 1 )
+data = {
+"cells": PoolIntArray( 0, 0, 538312704, 2, 0, 1441793, 3, 0, 538312704, 4, 0, 1441793, 5, 0, 1441793, 6, 0, 1441793, 7, 0, 1441793, 65535, 0, 538312704, 0, 1, 1441792, 2, 1, 1441793, 3, 1, 538312704, 4, 1, 1441793, 5, 1, 538312705, 6, 1, 1441793, 7, 1, 538312705, 8, 1, 538312705, 65534, 1, 1441792, 65535, 1, 1441792, 1, 2, 538312704, 2, 2, 1441792, 3, 2, 538312704, 4, 2, 1441792, 5, 2, 1441792, 6, 2, 1441792, 65532, 2, 1441792, 65533, 2, 1441792, 65534, 2, 538312704, 65535, 2, 1441792, 1, 65534, 538312704, 2, 65534, 538312704, 5, 65534, 538312705, 0, 65535, 1441792, 2, 65535, 1441793, 3, 65535, 538312704, 4, 65535, 1441793, 5, 65535, 1441793, 6, 65535, 1441793 )
+}
+__meta__ = {
+"_editor_clip_": 0,
+"_editor_floor_": Vector3( 0, 0, 0 )
+}
