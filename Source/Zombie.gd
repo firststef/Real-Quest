@@ -1,6 +1,6 @@
 extends KinematicBody
 
-const MOVE_SPEED = 3
+const MOVE_SPEED = 0
 
 onready var raycast = $RayCast
 onready var anim_player = $AnimationPlayer
