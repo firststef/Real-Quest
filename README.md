@@ -1,6 +1,7 @@
 # FIICODE2020-LOGGER-TEAM-PROJECT
 
 Our entry for FIICODE contest - RealQuest - a game for survivors, set in a world that closely resembles your surroundings.
+
 Jocul nostru pentru concursul FIICODE - RealQuest - un joc de supravietuire, plasat intr-o lume care se aseamana cu locul in care va aflati.
 
 # Reference / Referinta
