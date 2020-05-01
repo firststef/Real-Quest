@@ -2,32 +2,67 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Add an icon to the map</title>
-    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <title>Real Quest</title>
     <link href="https://api.mapbox.com/mapbox-gl-js/v1.8.1/mapbox-gl.css" rel="stylesheet" />
-    <link href="gamestyle.css" rel="stylesheet" />
-    <script type="text/javascript" src="https://api.mapbox.com/mapbox-gl-js/v1.8.1/mapbox-gl.js"></script>
-    <script type="text/javascript" src="https://code.createjs.com/1.0.0/createjs.js"></script>
-    <script type="text/javascript" src="greiner-hormann.min.js"></script>
-    <script type="text/javascript" src="game.js"></script>
-    <style>
-
-    </style>
+    <link href="gamestyle.css" rel="stylesheet" type="text/css"/>
+    <link rel="icon" href="../sprites/rq-icon.ico" type="image/x-icon" />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v1.8.1/mapbox-gl.js"></script>
+    <script src="createjs.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/1.4.5/socket.io.min.js"></script>
+    <script src="game.js"></script>
 </head>
 
 <body onload="load();">
+    <!-- Mapbox map is needed to unpack geometry features -->
     <div id="map"></div>
-    <!--<div id='downloadGPXDiv' class='button'><a href="./track.gpx" download="track.gpx">Download GPX</a></div>-->
-    
-    <div id="gameContainer">
-        <div id="uiScreen" class="non-blocking" hidden>
-            <div class="lifebar-container blocking">
-                <div id="lifebar"></div>
+    <div id="gameContainer" style="display:block;">
+    <div id="uiScreen" class="non-blocking" hidden>
+            <div class="upper-row">
+                <div class="ui-cont left-ui">
+                    <div class="lifebar-container blocking">
+                        <div id="lifebar"></div>
+                    </div>
+                    <div class="points-container blocking">
+                        <p id="totalPoints">HeroPoints: 0</p>
+                        <p id="yourCoordinates"></p>
+                    </div>
+                </div>
+                <div class="ui-cont middle-ui" >
+                    <p id="placeDescriptionTop"></p>
+                    <p id="placeName"></p>
+                    <p id="placeDescriptionBottom"></p>
+                </div>
+                <div id="scoreBoards" class="ui-cont right-ui">
+                    <table class="topazCells"><tr><td>Loading live player score board...</td></tr></table>
+                </div>
+            </div>
+            <div class="bottom-row">
+                <div class="console">
+                    <div class="console-text" id="consoleText"></div>
+                    <input id="consoleInput" type="text">
+                </div>
             </div>
         </div>
         <canvas id="gameCanvas">
             alternate content
         </canvas>
+    </div>
+    <div id ="endScreenContainer" style="display: none">
+        <h1>Sad, you died.</h1>
+        <h3>Download your journey (gpx format).</h3>
+        <div id='downloadGPXDiv' class='button' onclick="downloadGPX()">
+            Journey GPX
+        </div>
+        <h3>LeaderBoards</h3>
+        <table id="leaderBoards" class="leader-boards-table"><tr><td>Loading leaderboards <div class="loader-wheel"></div></td></tr></table>
+        <h4 id="yourScore"></h4>
+        <h4 id="yourPlace"></h4>
+    </div>
+    <div id="loadingScreen" class="loading-screen">
+        <div><p>Downloading Resources</p><div id="loadResourcesWheel" class="loader-wheel"></div></div>
+        <div><p>Loading Map</p><div id="loadMapWheel" class="loader-wheel"></div></div>
+        <div><p>Rendering Environment</p><div id="loadTimeAndWeatherWheel" class="loader-wheel"></div></div>
+        <div><p>Initializing</p><div id="initializingWheel" class="loader-wheel"></div></div>
     </div>
 </body>
 </html>

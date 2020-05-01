@@ -11,34 +11,57 @@ SECTIONS:
 9.NOTES
 */
 /* --------------------------------------------------------------------------------------------------------- CONSTANTS AND GLOBALS*/
-const DEBUG = true;
+const DEBUG = false;
+const ORIGIN = 'https://firststef.tools';
+//const ORIGIN = 'http://localhost';
 
 const defaultPos = [27.598505, 47.162098];
 const ZOOM = 1000000;
-const scale = 4; // world pixel scale - every logical pixel is represented by (scale) number of pixels on the screen
+const scale = 2.5; // world pixel scale - every logical pixel is represented by (scale) number of pixels on the screen
 const windowWidth =  window.innerWidth;
 const windowHeight =  window.innerHeight;
+const buildingsBoxX=windowWidth*1.5; //thinking outside of box is not good
+const buildingsBoxY=windowHeight*1.5;
 const offsetx = windowWidth / (2*scale); //used for offsetting the "camera" center
 const offsety = windowHeight / (2*scale);
 const playerWidth = 20;
 const playerRadius = 10; //radius of the player collision
-const collisionDelta=5;
+const collisionDelta=2;
 const projectileRadius = 4;
-const monsterRadius = 10;
-const maxNrOfMonsters = 5;
-const displacement = 0.000002; // collision is checked by offsetting the position with this amount and checking for contact
+const monsterRadius = 8 ;
+const projectileScale = 0.5;
+const MAX_COORDINATE=180;
+const initialDisplacement=0.000002;
+const deleteLimitW = windowWidth/scale*1.4;
+const deleteLimitH = windowHeight/scale*1.4;
+
+var displacement = initialDisplacement; // collision is checked by offsetting the position with this amount and checking for contact
+
+
 const playerMaxHealth = 100;
+const moneyPowerUpValue = 50;
 
 //Palette
 const groundColor = "#379481";
 const buildingsColor = "#956c6c";
+const buildingsColor2 = "rgba(193,71,190,0.82)";
+const buildingsColorMultiPolygon = "rgba(193,74,3,0.82)";
 const roadsColor = "#d3d3d3";
-const waterColor = "blue";
+const waterColor = "#0892A5";
+
+//Socket
+const socketServerAddress = ORIGIN;
+//const socketServerAddress = ORIGIN;
+const slowUpdateDelta = 1000;
+const fastUpdateDelta = 1000/30;
+
+var playerName = "admin";
 
 var pageLoader;
 var resourceLoader; // resource loader
 var stage; // the master object, contains all the objects in the game
 var Key;
+var spriteSheet;
 
 //Layers - from bottom to top:
 //var background - object
@@ -46,10 +69,11 @@ var camera;
 var roadsLayer; // contains all roads
 var waterLayer; // contains all water polygons
 var buildingsLayer; // contains all the buildings
+var otherBaseLayer;
 var baseLayer; // contains the player and other movable objects - projectiles, monsters
 var monsterLayer;
 var projectileLayer; // contains all the projectiles
-//var weatherOverlay - object
+var weatherOverlay;
 var luminosityOverlay;
 var uiScreen;
 
@@ -59,7 +83,9 @@ var buildings = [];
 //Api
 var gameWeather;
 var gameStartTime=-1;
+var currentTime;
 var map;
+var weatherSheet;
 
 //Game Vars
 var player;
@@ -67,22 +93,50 @@ var playerPos = defaultPos;
 var playerHealth = playerMaxHealth;
 var gameOver = false;
 
+var maxNrOfMonsters = 0; //made var from const to increase it as game goes on.
 var monsterSheet;
 var monsterSpawnTime=100;
 var nrOfMonsters=0;
-
+var ticks=0;
+var monsterSpawner=3600;
 var projectileSpawnTime=1000;
-//?/
+
+//Power-ups
+var currentBox;
+var speedTimeout;
+var speedDisplacement=1.6*displacement;
+var smashesLeft=0;
+const mayRemove=1;
 
 //UI vars
 var playerLifeBar;
+var playerTotalPoints;
+var scoreBoards;
+
+var nearbyMessageDescTop;
+var nearbyMessageDescBottom;
+var nearbyMessageName;
+var yourCoordinates;
+var consoleText;
+var textBox;
 
 //GPX vars
 var GPXString = "";
 var GPXInterval;
+var writing = false;
 
 //projectile vars
 var projectileSheet;
+
+//points vars
+var monstersKilled=0;
+var totalPoints=0;
+
+//Socket
+var socket;
+var socketUpdateTimeout;
+var updateSocketCallback;
+var currentUpdateDelta = slowUpdateDelta;
 
 /* --------------------------------------------------------------------------------------------------------- GAME INIT FUNCTIONS */
 
@@ -94,6 +148,7 @@ class PageLoader{
         this.callbackObject = callbackObject;
         this.completedCallbacks = [];
         this.onCallbackEnd = onCallbackEnd;
+        this.alreadyLoaded = false;
     }
 
     loadPage(){
@@ -109,17 +164,21 @@ class PageLoader{
         return Object.keys(this.callbackObject).every((key) => this.completedCallbacks.includes(key));
     }
 
+    isAlreadyLoaded(){
+        return this.alreadyLoaded;
+    }
+
     handleCompleted(){
-        if (this.isFinished()){
+        if (this.isFinished() && !this.alreadyLoaded){
             this.onCallbackEnd();
+            this.alreadyLoaded = true;
         }
     }
 }
 
 /** runs when the page is opened, calls PageLoader */
 function load() {
-    parseParameters();
-
+    getGameParameters();
     let canvas = document.getElementById("gameCanvas");
     canvas.focus();
 
@@ -141,8 +200,7 @@ function load() {
     pageLoader = new PageLoader(
         {
             loadResources: loadImages,
-            loadWeather: getWeather,
-            loadTime: setGameStartTime,
+            loadTimeAndWeather: getServerTimeAndWeather,
             loadMap: setMap
         },
         loadComplete
@@ -155,8 +213,11 @@ function loadImages() {
     resourceLoader = new createjs.LoadQueue(false);
     resourceLoader.loadFile({id:"players", src:"../sprites/players.png"});
     resourceLoader.loadFile({id:"projectiles", src:"../sprites/lofiProjs.png"});
-    resourceLoader.loadFile({id:"monsters", src:"../sprites/monsters.png"});
+    resourceLoader.loadFile({id:"monsters", src:"../sprites/eyeFly.png"});
+    resourceLoader.loadFile({id:"weather", src:"../sprites/weather.png"});
     resourceLoader.addEventListener("complete", function () {
+        document.getElementById("loadResourcesWheel").className = "";
+        document.getElementById("loadResourcesWheel").innerHTML = "&#x2714;";
         pageLoader.notifyCompleted('loadResources');
     });
 }
@@ -167,21 +228,112 @@ function loadComplete(){
     document.getElementById("uiScreen").hidden = false;
 
     createjs.DisplayObject.prototype.centerX = function() {
-        return  this.x + this.getBounds().width*this.scaleX*Math.sqrt(2)/2*Math.cos((this.rotation+45) * Math.PI / 180);
+        try {
+            return this.x + this.getBounds().width*this.scaleX*Math.sqrt(2)/2*Math.cos((this.rotation+45) * Math.PI / 180);
+        }
+        catch (e) {
+            return this.x;
+        }
     };
     createjs.DisplayObject.prototype.centerY = function() {
-        return  this.y + this.getBounds().height*this.scaleY*Math.sqrt(2)/2*Math.sin((this.rotation+45) * Math.PI / 180);
+        try{
+            return  this.y + this.getBounds().height*this.scaleY*Math.sqrt(2)/2*Math.sin((this.rotation+45) * Math.PI / 180);
+        }
+        catch (e) {
+            return this.y;
+        }
     };
     createjs.DisplayObject.prototype.reverseCenterX = function(centerX) {
-        return  centerX - this.getBounds().width*this.scaleX*Math.sqrt(2)/2*Math.cos((this.rotation+45) * Math.PI / 180);
+        try {
+            return centerX - this.getBounds().width*this.scaleX*Math.sqrt(2)/2*Math.cos((this.rotation+45) * Math.PI / 180);
+        }
+        catch (e) {
+            return centerX;
+        }
     };
     createjs.DisplayObject.prototype.reverseCenterY = function(centerY) {
-        return  centerY - this.getBounds().height*this.scaleY*Math.sqrt(2)/2*Math.sin((this.rotation+45) * Math.PI / 180);
+        try {
+            return centerY - this.getBounds().height * this.scaleY * Math.sqrt(2) / 2 * Math.sin((this.rotation + 45) * Math.PI / 180);
+        }
+        catch (e) {
+            return centerY;
+        }
     };
 
     playerLifeBar = document.getElementById('lifebar');
+    playerTotalPoints = document.getElementById('totalPoints');
+    scoreBoards = document.getElementById('scoreBoards');
 
-    //GameObjects
+    nearbyMessageDescTop = document.getElementById("placeDescriptionTop");
+    nearbyMessageDescBottom = document.getElementById("placeDescriptionBottom");
+
+    nearbyMessageName = document.getElementById("placeName");
+    yourCoordinates = document.getElementById("yourCoordinates");
+    consoleText = document.getElementById("consoleText");
+    textBox = document.getElementById("consoleInput");
+    textBox.onfocus = () => {writing = true};
+    textBox.onblur = () => {writing = false};
+
+    //GPX
+    GPXString = GPXString.concat("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:gpxx=\"http://www.garmin.com/xmlschemas/GpxExtensions/v3\" xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\" creator=\"mapstogpx.com\" version=\"1.1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/GpxExtensions/v3 http://www.garmin.com/xmlschemas/GpxExtensionsv3.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd\">\n\n<trk>\n\t<trkseg>\n");
+    GPXInterval = setInterval(function() {
+        if(gameOver === false)
+            GPXString = GPXString.concat("\t<trkpt lat=\"" + map.transform._center.lat + "\" lon=\"" + map.transform._center.lng + "\">\n\t</trkpt>\n");
+    },1000);
+
+    //Spritesheets
+    spriteSheet = new createjs.SpriteSheet({
+        framerate: 8,
+        "images": [resourceLoader.getResult("players")],
+        "frames": {"height": 32, "width": 32, "regX": 0, "regY":0, "spacing":5, "margin":0},
+        "animations": {
+            "idle": 0,
+            "runSideways": [0, 1, "idle", 1],
+            "runDown": {
+                frames: [4,5,4,6],
+                next: "idleDown",
+                speed: 1
+            },
+            "idleDown": 4,
+            "runUp": {
+                frames: [9,10,9,11],
+                next: "idleUp",
+                speed: 1
+            },
+            "idleUp":9
+        }
+    });
+    projectileSheet = new createjs.SpriteSheet({
+        framerate: 8,
+        "images": [resourceLoader.getResult("projectiles")],
+        "frames": {"height": 32, "width": 32, "regX": 0, "regY":0, "spacing":5, "margin":0},
+        "animations": {
+            "purple_attack": 70,
+            "blue_attack": 4,
+            "money": 125,
+            "speedBoost": 126,
+            "smashBuilding": 127
+        }
+    });
+    monsterSheet = new createjs.SpriteSheet({
+        framerate: 8,
+        "images": [resourceLoader.getResult("monsters")],
+        "frames": {"height": 32, "width": 32, "regX": 0, "regY":0, "spacing":10, "margin":0},
+        "animations": {
+            "moveRed": {
+                frames: [0,1,2],
+                next: "moveRed",
+                speed: 1
+            },
+            "moveGreen": {
+                frames: [3,4,5],
+                next: "moveGreen",
+                speed: 1
+            }
+        }
+    });
+
+    //Layer initialization
     let background = new createjs.Shape();
     background.graphics.beginFill(groundColor);
     background.graphics.drawRect(0, 0, windowWidth, windowHeight);
@@ -208,6 +360,10 @@ function loadComplete(){
     baseLayer.x = stage.x;
     baseLayer.y = stage.y;
 
+    otherBaseLayer = new createjs.Container();
+    otherBaseLayer.x = stage.x;
+    otherBaseLayer.y = stage.y;
+
     projectileLayer = new createjs.Container();
     projectileLayer.x = stage.x;
     projectileLayer.y = stage.y;
@@ -216,80 +372,58 @@ function loadComplete(){
     monsterLayer.x = stage.x;
     monsterLayer.y = stage.y;
 
-    luminosityOverlay = new createjs.Shape();
-    if (gameStartTime < 420 || gameStartTime > 1320) {
-        setNightOverlay();
-    }
-    luminosityOverlay.name = "luminosityOverlay";
-
     uiScreen = new createjs.DOMElement("uiScreen");
+    uiScreen.name = "uiScreen";
+    uiScreen.scale = 1/scale;
 
+    //Sprites init
+    let playerSprite = new createjs.Sprite(spriteSheet, "idle");
+    playerSprite.scaleX = 0.5;
+    playerSprite.scaleY = 0.5;
+    playerSprite.x = playerSprite.reverseCenterX(playerGetPos()[0]);
+    playerSprite.y = playerSprite.reverseCenterY(playerGetPos()[1]);
+    playerSprite.name = "player";
+    let playerRect;
+    if (DEBUG === true) {
+        playerRect = new createjs.Shape();
+        playerRect.graphics.beginStroke("green");
+        playerRect.name = "playerRect";
+        playerRect.graphics.beginFill("green");
+        playerRect.graphics.drawCircle(playerSprite.centerX(), playerSprite.centerY(), playerRadius);
+    }
+
+    //Adding Layers to the tree
     stage.addChild(background);
     stage.addChild(camera);
     camera.addChild(roadsLayer);
     camera.addChild(waterLayer);
     camera.addChild(buildingsLayer);
+    camera.addChild(otherBaseLayer);
     camera.addChild(baseLayer);
     camera.addChild(projectileLayer);
     camera.addChild(monsterLayer);
-    stage.addChild(luminosityOverlay);
+    //stage.addChild(weatherOverlay);
+    //stage.addChild(luminosityOverlay);
     stage.addChild(uiScreen);
 
-    //GPX
-    GPXString = GPXString.concat("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:gpxx=\"http://www.garmin.com/xmlschemas/GpxExtensions/v3\" xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\" creator=\"mapstogpx.com\" version=\"1.1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/GpxExtensions/v3 http://www.garmin.com/xmlschemas/GpxExtensionsv3.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd\">\n\n<trk>\n\t<trkseg>\n");
-    GPXInterval = setInterval(function() {
-        if(gameOver === false)
-            GPXString = GPXString.concat("\t<trkpt lat=\"" + map.transform._center.lat + "\" lon=\"" + map.transform._center.lng + "\">\n\t</trkpt>\n");
-    },1000);
+    updateWeatherOverlay();
+    setInterval(updateWeatherOverlay, 600000);
 
-    let spriteSheet = new createjs.SpriteSheet({
-        framerate: 8,
-        "images": [resourceLoader.getResult("players")],
-        "frames": {"height": 32, "width": 32, "regX": 0, "regY":0, "spacing":10, "margin":0, "count":315},
-        "animations": {
-            "idle": 0,
-            "runSideways": [0, 1, "idle", 1.5],
-            "runDown": {
-                frames: [7,8,7,9],
-                next: "idleDown",
-                speed: 1.5
-            },
-            "idleDown": 7,
-            "runUp": {
-                frames: [14,15,14,16],
-                next: "idleUp",
-                speed: 1.5
-            },
-            "idleUp":14
-        }
-    });
-    projectileSheet = new createjs.SpriteSheet({
-        framerate: 8,
-        "images": [resourceLoader.getResult("projectiles")],
-        "frames": {"height": 8, "width": 8, "regX": 0, "regY":0, "spacing":0, "margin":0},
-        "animations": {
-            "attack": 70
-        }
-    });
-    monsterSheet = new createjs.SpriteSheet({
-        framerate: 8,
-        "images": [resourceLoader.getResult("monsters")],
-        "frames": {"height": 8, "width": 8, "regX": 0, "regY":0, "spacing":0, "margin":0},
-        "animations": {
-            "move": {
-                frames: [0,1,2,3,4,5,6,7],
-                speed: 1
-            }
-        }
-    });
+    //Adding Sprites to the tree
+    if (DEBUG === true) {
+        baseLayer.addChild(playerRect);
+    }
+    baseLayer.addChild(playerSprite);
+    player = baseLayer.getChildByName("player");
 
     // GameEvents init
     stage.addEventListener("stagemousedown", (evt) => {
-        let arrowSprite = new createjs.Sprite(projectileSheet, "attack");
-        arrowSprite.scaleX = 2;
-        arrowSprite.scaleY = 2;
+        document.getElementById("consoleInput").blur();
+        let arrowSprite = new createjs.Sprite(projectileSheet, "blue_attack");
+        arrowSprite.scaleX = 0.3;
+        arrowSprite.scaleY = 0.3;
         let angle = Math.atan2(evt.stageX - offsetx*scale, -(evt.stageY - offsety*scale) );
-        arrowSprite.rotation = angle * (180/Math.PI) - 45;
+        arrowSprite.rotation = angle * (180/Math.PI) - 90;
         let p = new Projectile(
             arrowSprite,
             arrowSprite.reverseCenterX(playerGetPos()[0] + Math.sin(angle) * playerRadius),
@@ -300,28 +434,113 @@ function loadComplete(){
         );
     });
 
-    let playerSprite = new createjs.Sprite(spriteSheet, "idle");
-    playerSprite.scaleX = 0.5;
-    playerSprite.scaleY = 0.5;
-    playerSprite.x = playerSprite.reverseCenterX(playerGetPos()[0]);
-    playerSprite.y = playerSprite.reverseCenterY(playerGetPos()[1]);
-    playerSprite.name = "player";
-
-    if (DEBUG === true) {
-        let playerRect = new createjs.Shape();
-        playerRect.graphics.beginStroke("green");
-        playerRect.name = "playerRect";
-        playerRect.graphics.beginFill("green");
-        playerRect.graphics.drawCircle(playerSprite.centerX(), playerSprite.centerY(), playerRadius);
-        baseLayer.addChild(playerRect);
-    }
-    baseLayer.addChild(playerSprite);
-    player = baseLayer.getChildByName("player");
-
     //Input init
     Key = loadKeyHandler();
     window.addEventListener('keyup', function(event) { Key.onKeyup(event); }, false);
     window.addEventListener('keydown', function(event) { Key.onKeydown(event); }, false);
+
+    //Server communication
+    socket = io(socketServerAddress, {secure: true, query: {username: playerName}});
+    socket.on('connect', function () {
+        socket.on('other_player', function (obj) {
+            obj = JSON.parse(obj);
+            otherBaseLayer.removeAllChildren();
+
+            if (obj.length > 0){
+                currentUpdateDelta = fastUpdateDelta;
+            }
+            else {
+                currentUpdateDelta = slowUpdateDelta;
+            }
+
+            obj.forEach((otherP) => {
+                let otherPlayerContainer = new createjs.Container();
+
+                let otherPlayer = new createjs.Sprite(spriteSheet, "idle");
+                otherPlayer.scaleX = Math.sign(otherP.scaleX)* 0.5;
+                otherPlayer.scaleY = 0.5;
+                otherPlayer.x = 0;
+                otherPlayer.y = 0;
+                otherPlayer.name = otherP.username;
+                otherPlayer.currentFrame = otherP.currentFrame;
+                otherPlayer.currentAnimation  = otherP.currentAnimation;
+                otherPlayer.gotoAndPlay(otherP.currentAnimation);
+                otherPlayer.currentAnimationFrame = otherP.currentAnimationFrame;
+                if (DEBUG === true) {
+                    let otherPlayerCollider = new createjs.Shape();
+                    otherPlayerCollider.graphics.beginStroke("green");
+                    otherPlayerCollider.name = otherP.username + "_collider";
+                    otherPlayerCollider.graphics.beginFill("green");
+                    otherPlayerCollider.graphics.drawCircle(otherPlayer.centerX(), otherPlayer.centerY(), playerRadius);
+                    otherPlayerContainer.addChild(otherPlayerCollider);
+                }
+                otherPlayerContainer.addChild(otherPlayer);
+                let playerText = new createjs.Text(otherP.username, "7px Comic Sans MS", "#FF0000");
+                playerText.x = otherPlayer.centerX() - playerText.getBounds().width/2;
+                playerText.y = 0;
+                playerText.textBaseline = "alphabetic";
+                otherPlayerContainer.addChild(playerText);
+
+
+                otherBaseLayer.addChild(otherPlayerContainer);
+                otherPlayerContainer.x = otherPlayer.reverseCenterX(getCoordinateX(otherP.coordinates[0]));
+                otherPlayerContainer.y = otherPlayer.reverseCenterY(getCoordinateY(otherP.coordinates[1]));
+            });
+        });
+        socket.on('chat-message', function (obj) {
+            let str = '<p><span class=\"console-name\">' + obj.user + '</span>:' + obj.message + '</p>';
+            consoleText.innerHTML += str;
+        });
+    });
+    updateSocketCallback = function () {
+        let sendObj = {
+            coordinates: [map.transform._center.lng, map.transform._center.lat],
+            currentPoints: parseFloat((totalPoints/600).toFixed(2)),
+            currentFrame: player.currentFrame,
+            currentAnimation : player.currentAnimation,
+            currentAnimationFrame : player.currentAnimationFrame,
+            scaleX: player.scaleX
+        };
+
+        socket.emit('coordonate', sendObj);
+        if (!gameOver) {
+            socketUpdateTimeout = setTimeout(updateSocketCallback, currentUpdateDelta);
+        }
+    };
+    socketUpdateTimeout = setTimeout(updateSocketCallback, slowUpdateDelta);
+
+    let input = document.getElementById("consoleInput");
+    input.addEventListener("keyup", function(event) {
+        if (event.code === 'Enter') {
+            event.preventDefault();
+            if (input.value !== ''){
+                socket.emit('new_message',{message:input.value,user:playerName});
+            }
+            input.value = '';
+        }
+    });
+
+    //CleanFarAwayBuildings
+    setInterval(cleanFarAwayBuildings, 3000);
+
+    //UpdateLeaderBoards
+    setInterval(updateScoreBoard, 3000);
+
+    //UpdatePlayerScore
+    setInterval(updatePlayerTotalPoints, 300);
+
+    //UpdateStreet
+    updateNearbyMessage();
+    setInterval(updateNearbyMessage, 2000);
+
+    //Create powerUps
+    setInterval(createPowerUps, 3000);
+
+    //Remove LoadingScreen
+    document.getElementById("initializingWheel").className = "";
+    document.getElementById("initializingWheel").innerHTML = "&#x2714;";
+    document.getElementById("loadingScreen").style.display = 'none';
+    document.getElementById("gameCanvas").focus();
 
     //Tick settings
     createjs.Ticker.timingMode = createjs.Ticker.RAF_SYNCHED;
@@ -330,16 +549,34 @@ function loadComplete(){
 }
 
 /** sets the initial player position */
-function parseParameters(){
-    const queryString = window.location.search;
-    const urlParams = new URLSearchParams(queryString);
-    let lat = urlParams.get("latitude");
-    let lng = urlParams.get("longitude");
-    /**
-     * daca lasam cu get ar trebuii validat lat si long si aici
-     */
-    if (lat != null && lng != null){
-        playerPos = [lng, lat];
+function getGameParameters(){
+    if (isLocalStorageSupported()){
+        let lat = localStorage.getItem("RealQuestLatitude");
+        let lng = localStorage.getItem("RealQuestLongitude");
+        let username = localStorage.getItem("RealQuestUsername");
+
+        //TODO: temporary replace with if (lat != null || lng != null || username !== null) => redirect to index
+        if (lat != null && lng != null){
+            playerPos = [lng, lat];
+        }
+        if (username !== null){
+            playerName = username;
+        }
+    }
+    else {
+        const queryString = window.location.search;
+        const urlParams = new URLSearchParams(queryString);
+        let lat = urlParams.get("latitude");
+        let lng = urlParams.get("longitude");
+        let username = urlParams.get("username");
+
+        //Temporarily
+        if (lat != null && lng != null){
+            playerPos = [lng, lat];
+        }
+        if (username !== null){
+            playerName = username;
+        }
     }
 }
 
@@ -351,99 +588,102 @@ function tick(event) {
         if (player === undefined)
             return;
 
-        let axisX = 0;
-        let axisY = 0;
-        if (Key.isDown(Key.W)) {
-            // up
-            if (checkCollisionWithBuildings(playerGetPos(0, displacement)[0], playerGetPos(0, displacement)[1], playerRadius))
-                if (checkPlayerCollisionWithMonsters(playerGetPos(0, displacement)[0], playerGetPos(0, displacement)[1], playerRadius))
-                    axisY = 1;
+        if (!writing) {
+            let axisX = 0;
+            let axisY = 0;
+            if (Key.isDown(Key.W)) {
+                // up
+                if (checkCollisionWithBuildings(playerGetPos(0, displacement)[0], playerGetPos(0, displacement)[1], playerRadius, mayRemove))
+                    if (checkPlayerCollisionWithMonsters(playerGetPos(0, displacement)[0], playerGetPos(0, displacement)[1], playerRadius))
+                        axisY = 1;
 
-            if (player.currentAnimation !== "runUp" && player.currentAnimation !== "runSideways")
-                player.gotoAndPlay("runUp");
+                if (player.currentAnimation !== "runUp" && player.currentAnimation !== "runSideways")
+                    player.gotoAndPlay("runUp");
 
-        } else if (Key.isDown(Key.S)) {
-            // down
-            if (checkCollisionWithBuildings(playerGetPos(0, -displacement)[0], playerGetPos(0, -displacement)[1], playerRadius))
-                if (checkPlayerCollisionWithMonsters(playerGetPos(0, -displacement)[0], playerGetPos(0, -displacement)[1], playerRadius))
-                    axisY = -1;
+            } else if (Key.isDown(Key.S)) {
+                // down
+                if (checkCollisionWithBuildings(playerGetPos(0, -displacement)[0], playerGetPos(0, -displacement)[1], playerRadius, mayRemove))
+                    if (checkPlayerCollisionWithMonsters(playerGetPos(0, -displacement)[0], playerGetPos(0, -displacement)[1], playerRadius))
+                        axisY = -1;
 
-            if (player.currentAnimation !== "runDown" && player.currentAnimation !== "runSideways")
-                player.gotoAndPlay("runDown");
-        }
-        if (Key.isDown(Key.A)) {
-            // left
-            if (checkCollisionWithBuildings(playerGetPos(-displacement, 0)[0], playerGetPos(-displacement, 0)[1], playerRadius))
-                if (checkPlayerCollisionWithMonsters(playerGetPos(-displacement, 0)[0], playerGetPos(-displacement, 0)[1], playerRadius))
-                    axisX = -1;
+                if (player.currentAnimation !== "runDown" && player.currentAnimation !== "runSideways")
+                    player.gotoAndPlay("runDown");
+            }
+            if (Key.isDown(Key.A)) {
+                // left
+                if (checkCollisionWithBuildings(playerGetPos(-displacement, 0)[0], playerGetPos(-displacement, 0)[1], playerRadius, mayRemove))
+                    if (checkPlayerCollisionWithMonsters(playerGetPos(-displacement, 0)[0], playerGetPos(-displacement, 0)[1], playerRadius))
+                        axisX = -1;
 
-            if (player.currentAnimation !== "runSideways")
-                player.gotoAndPlay("runSideways");
+                if (player.currentAnimation !== "runSideways")
+                    player.gotoAndPlay("runSideways");
 
-            player.setTransform(
-                player.x,
-                player.y,
-                (-1) * Math.abs(player.scaleX),
-                player.scaleY,
-                0,
-                0,
-                0,
-                0,
-                0
-            );
+                player.setTransform(
+                    player.x,
+                    player.y,
+                    (-1) * Math.abs(player.scaleX),
+                    player.scaleY,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                );
 
-        } else if (Key.isDown(Key.D)) {
-            // right
-            if (checkCollisionWithBuildings(playerGetPos(displacement, 0)[0], playerGetPos(displacement, 0)[1], playerRadius))
-                if (checkPlayerCollisionWithMonsters(playerGetPos(displacement, 0)[0], playerGetPos(displacement, 0)[1], playerRadius))
-                    axisX = 1;
+            } else if (Key.isDown(Key.D)) {
+                // right
+                if (checkCollisionWithBuildings(playerGetPos(displacement, 0)[0], playerGetPos(displacement, 0)[1], playerRadius, mayRemove))
+                    if (checkPlayerCollisionWithMonsters(playerGetPos(displacement, 0)[0], playerGetPos(displacement, 0)[1], playerRadius))
+                        axisX = 1;
 
-            if (player.currentAnimation !== "runSideways")
-                player.gotoAndPlay("runSideways");
+                if (player.currentAnimation !== "runSideways")
+                    player.gotoAndPlay("runSideways");
 
-            player.setTransform(
-                player.x,
-                player.y,
-                Math.abs(player.scaleX),
-                player.scaleY,
-                0,
-                0,
-                0,
-                0
-            );
-        }
-
-        if (axisX !== 0 || axisY !== 0) {
-            let directionalDisplacement;
-            if (axisX !== 0 && axisY !== 0) {
-                directionalDisplacement = displacement / Math.sqrt(2);
-            } else {
-                directionalDisplacement = displacement;
+                player.setTransform(
+                    player.x,
+                    player.y,
+                    Math.abs(player.scaleX),
+                    player.scaleY,
+                    0,
+                    0,
+                    0,
+                    0
+                );
             }
 
-            map.jumpTo({
-                center: [map.transform.center.lng + axisX * directionalDisplacement, map.transform.center.lat + axisY * directionalDisplacement],
-                zoom: map.transform.zoom
-            });
+            if (axisX !== 0 || axisY !== 0) {
+                let directionalDisplacement;
+                if (axisX !== 0 && axisY !== 0) {
+                    directionalDisplacement = displacement / Math.sqrt(2);
+                } else {
+                    directionalDisplacement = displacement;
+                }
+
+                map.jumpTo({
+                    center: [map.transform.center.lng + axisX * directionalDisplacement, map.transform.center.lat + axisY * directionalDisplacement],
+                    zoom: map.transform.zoom
+                });
+            }
+
+            player.setTransform(
+                player.reverseCenterX(getCoordinateX(map.transform._center.lng)),
+                player.reverseCenterY(getCoordinateY(map.transform._center.lat)),
+                player.scaleX,
+                player.scaleY,
+                0,
+                0,
+                0,
+                player.regX,
+                0
+            );
+            if (DEBUG === true) {
+                baseLayer.getChildByName("playerRect").setTransform(player.centerX() - offsetx, player.centerY() - offsety);
+            }
+            camera.setTransform(-player.centerX() + offsetx, -player.centerY() + offsety);
+            yourCoordinates.innerHTML = "Your coordinates: " + map.transform.center.lng.toFixed(2) + "," + map.transform.center.lat.toFixed(2);
         }
 
-        player.setTransform(
-            player.reverseCenterX(getCoordinateX(map.transform._center.lng)),
-            player.reverseCenterY(getCoordinateY(map.transform._center.lat)),
-            player.scaleX,
-            player.scaleY,
-            0,
-            0,
-            0,
-            player.regX,
-            0
-        );
-        if (DEBUG === true) {
-            baseLayer.getChildByName("playerRect").setTransform(player.centerX() - offsetx, player.centerY() - offsety);
-        }
-        camera.setTransform(-player.centerX() + offsetx, -player.centerY() + offsety);
-
-        //bullet move = hit
+        //Bullet collision
         projectileLayer.children.forEach((sprite) => {
             if (sprite.isProjectile === true) {
                 sprite.x += sprite.velocityX;
@@ -455,17 +695,18 @@ function tick(event) {
                 if (sprite.faction==="player"){
                     if (checkCollisionWithBuildings(sprite.centerX(), sprite.centerY(), projectileRadius) === false)
                         Projectile.removeProjectileWithId(sprite.name);
-                    else if (checkCollisionWithMonsters(sprite.centerX(), sprite.centerY(), projectileRadius) === false)
+                    else if (checkProjectileCollisionWithMonsters(sprite.centerX(), sprite.centerY(), projectileRadius) === false)
                         Projectile.removeProjectileWithId(sprite.name);
                 } else if (sprite.faction==="monster"){
-                    if (checkCollisionWithBuildings(sprite.centerX(), sprite.centerY(), projectileRadius) === false)
+/*                    if (checkCollisionWithBuildings(sprite.centerX(), sprite.centerY(), projectileRadius) === false)
                         Projectile.removeProjectileWithId(sprite.name);
-                    else if (checkProjectileCollisionWithPlayer(sprite.centerX(), sprite.centerY(), projectileRadius)===false){
+                    else*/ if (checkCircleCollisionWithPlayer(sprite.centerX(), sprite.centerY(), projectileRadius)===false){
                         Projectile.removeProjectileWithId(sprite.name);
                         playerHealth -= 10;
                         if (playerHealth < 0) {
                             playerHealth = 0;
                             gameOver = 1;
+                            //TODO !!! STOP all the other setIntervals
                         }
                         updatePlayerLifeBar();
                     }
@@ -473,26 +714,36 @@ function tick(event) {
             }
         });
 
+        //Monster collisions
         monsterLayer.children.forEach((sprite) => {
             if (sprite.isMonster === true) {
                 sprite.timeToShoot--;
 
-
-
                 let dx = player.x - sprite.x;
                 let dy = player.y - sprite.y;
-
+                if (dx>deleteLimitW||dx<-deleteLimitW||dy>deleteLimitH||dy<-deleteLimitH){
+                    nrOfMonsters--;
+                    Monster.removeMonsterWithId(sprite.name);
+                }
                 let angle = Math.atan2(dy, dx);
+                sprite.x = sprite.x - (sprite.scaleX < 0 ? -sprite.getBounds().width*sprite.scaleX : 0);
+                if (dx < 0)
+                    sprite.scaleX = -Math.abs(sprite.scaleX);
+                else
+                    sprite.scaleX = Math.abs(sprite.scaleX);
+                sprite.x = sprite.x + (sprite.scaleX < 0 ? -sprite.getBounds().width*sprite.scaleX : 0);
 
                 let velocityX = sprite.velocity * Math.cos(angle);
                 let velocityY = sprite.velocity * Math.sin(angle);
 
-                if (sprite.timeToShoot==0){
+                if (sprite.mType === "Red" && sprite.timeToShoot===0){
                     sprite.timeToShoot=sprite.projectileTimer;
-                    let arrowSprite = new createjs.Sprite(projectileSheet, "attack");
+                    if (sprite.projectileTimer>35)
+                        sprite.projectileTimer=sprite.projectileTimer-3;
+                    let arrowSprite = new createjs.Sprite(projectileSheet, "purple_attack");
                     let arrowAngle=Math.atan2(dx, -dy);
-                    arrowSprite.scaleX = 2;
-                    arrowSprite.scaleY = 2;
+                    arrowSprite.scaleX = projectileScale;
+                    arrowSprite.scaleY = projectileScale;
                     arrowSprite.rotation = arrowAngle * (180/Math.PI) - 45;
                     let p = new Projectile(
                         arrowSprite,
@@ -500,12 +751,12 @@ function tick(event) {
                         arrowSprite.reverseCenterY(sprite.centerY() - Math.cos(arrowAngle) * monsterRadius),
                         arrowAngle  - Math.PI / 2,
                         4,
-                        20000,
+                        5000,
                         "monster"
                     );
                 }
 
-                if (checkMonsterCollisionWithPlayer(sprite.centerX(), sprite.centerY(), monsterRadius, collisionDelta)) {
+                if (checkCircleCollisionWithPlayer(sprite.centerX(), sprite.centerY(), monsterRadius, collisionDelta)) {
                     sprite.x += velocityX;
                     sprite.y += velocityY;
                     if (DEBUG === true) {
@@ -522,32 +773,74 @@ function tick(event) {
                 }
             }
         });
-
+        //Monster spawn
+        if ((ticks+1)%monsterSpawner===0){
+            if (monsterSpawner>600)
+                monsterSpawner=monsterSpawner-60;
+            maxNrOfMonsters++;
+        }
         monsterSpawnTime--;
+        totalPoints=totalPoints+1*(ticks/monsterSpawner+1);
         if (monsterSpawnTime <= 0 && nrOfMonsters < maxNrOfMonsters) {
             monsterSpawnTime = 100;
             nrOfMonsters++;
-            let monsterSprite = new createjs.Sprite(monsterSheet, "move");
+
+            let monsterSprite;
+            let mType;
+            if (Math.random() > 0.5) {
+                monsterSprite = new createjs.Sprite(monsterSheet, "moveRed");
+                mType = "Red";
+            }
+            else {
+                monsterSprite = new createjs.Sprite(monsterSheet, "moveGreen");
+                mType = "Green";
+            }
 
             monsterSprite.x = playerGetPos()[0];
             monsterSprite.y = playerGetPos()[1];
-            monsterSprite.scaleX = 3;
-            monsterSprite.scaleY = 3;
+            monsterSprite.scaleX = 0.5;
+            monsterSprite.scaleY = 0.5;
 
-            let randomX = Math.random() * 200 - 100;
-            let randomY = Math.random() * 200 - 100;
-            randomX += Math.sign(randomX) * 50;
-            randomY += Math.sign(randomY) * 50;
+            let xRand = Math.random();
+            let yRand = Math.random();
 
             new Monster(
                 monsterSprite,
-                playerGetPos()[0] + randomX,
-                playerGetPos()[1] + randomY,
-                1,
-                100
+                playerGetPos()[0] + (Math.floor(xRand*100%2)===0 ? 1 : -1) * (1 + xRand) * offsetx,
+                playerGetPos()[1] + (Math.floor(yRand*100%2)===0 ? 1 : -1) * (1 + yRand) * offsety,
+                mType === "Red" ? 1 : 2,
+                100,
+                mType
             );
         }
 
+        //PowerUp Activate
+        for (let i = 1 + DEBUG; i < baseLayer.children.length; i++){
+            let child = baseLayer.getChildAt(i);
+            if (child.isPowerUp){
+                if (checkCircleCollisionWithPlayer(child.centerX(), child.centerY(),
+                    (child.getBounds().width*child.scaleX)/2) === false){
+                    if (child.type==="money")
+                        totalPoints += 600*moneyPowerUpValue;
+                    else if (child.type === "speedBoost") {
+                        clearTimeout(speedTimeout);
+                        displacement=speedDisplacement;
+                        speedTimeout=setTimeout(function (){
+                            displacement=initialDisplacement;
+                        }, 5000);
+                    }
+                    else if (child.type === "smashBuilding"){
+                        smashesLeft++;
+                    }
+
+                    baseLayer.removeChildAt(i);
+
+                    i--;
+                }
+            }
+        }
+
+        ticks++;
         stage.update(event);
     } else {
         createjs.Ticker.paused = true;
@@ -555,30 +848,31 @@ function tick(event) {
         clearInterval(GPXInterval);
 
         GPXString = GPXString.concat("\t</trkseg>\n</trk>\n</gpx>");
-        console.log(GPXString);
 
         let canvas = document.getElementById("gameCanvas");
         let context = canvas.getContext('2d');
         context.clearRect(0, 0, canvas.width, canvas.height);
-        
-        let divMap = document.getElementById("map");
+        document.getElementById("map").style.display = 'none';
+
+        getLeaderBoards(parseFloat((totalPoints/600).toFixed(2)));
+        toggleScreen();
+        //let divMap = document.getElementById("map");
 
         //LogOnce();
 
-        divMap.style.width='50%';
-        divMap.style.height='50%';
+        //divMap.style.width='50%';
+        //divMap.style.height='50%';
 
-        map.resize();
-        
+        //map.resize();
+
         //gameOver=0;
         //playerHealth=playerMaxHealth;
-        //createjs.Ticker.paused = false;    
+        //createjs.Ticker.paused = false;
         //updatePlayerLifeBar();
     }
 }
 
 /* INPUT */
-//TODO cross-browser compatible method to get keycode
 function loadKeyHandler(){
     return {
         _pressed: {},
@@ -597,10 +891,12 @@ function loadKeyHandler(){
         },
 
         onKeydown: function(event) {
+            this._pressed[event.key] = true;
             this._pressed[event.keyCode] = true;
         },
 
         onKeyup: function(event) {
+            delete this._pressed[event.key];
             delete this._pressed[event.keyCode];
         }
     };
@@ -663,13 +959,17 @@ class Projectile {
 }
 
 class Monster{
-    constructor(sprite, x, y, velocity,hp) {
+    constructor(sprite, x, y, velocity,hp, type) {
         let id = getUniqueId();
 
         this.sprite = sprite;
         this.isMonster = true;
-        sprite.projectileTimer=Math.floor( (60+Math.random()*60) );
-        sprite.timeToShoot=sprite.projectileTimer;
+
+        sprite.mType = type;
+        if (type === "Red") {
+            sprite.projectileTimer = 2 * Math.floor((60 + Math.random() * 120));
+            sprite.timeToShoot = sprite.projectileTimer;
+        }
 
         sprite.name = id;
         sprite.isMonster = true;
@@ -705,88 +1005,104 @@ class Monster{
     }
 }
 
+
+function createPowerUps() {
+    if (this.moneyId === undefined){
+        this.moneyId = 0;
+    }
+    if (this.speedId === undefined){
+        this.speedId = 0;
+    }
+    if (this.smashBuilding === undefined){
+        this.smashBuilding = 0;
+    }
+
+    if (Math.random() > 0.5){
+        return;
+    }
+
+    let playerPos = playerGetPos();
+
+    let outSideLastBox = false;
+    if (currentBox === undefined ||
+     playerPos[0] < currentBox.x - currentBox.radius ||
+      playerPos[0] > currentBox.x + currentBox.radius ||
+        playerPos[1] < currentBox.y - currentBox.radius ||
+        playerPos[1] > currentBox.y + currentBox.radius){
+        currentBox = {
+            x: playerPos[0],
+            y: playerPos[1],
+            radius: offsetx > offsety ? offsetx : offsety
+        };
+        outSideLastBox = true;
+    }
+
+    if (outSideLastBox) {
+        let xRand;
+        let yRand;
+        if (Math.random() > 0.5) {
+            xRand = Math.random();
+            yRand = Math.random();
+            let money = new createjs.Sprite(projectileSheet, "money");
+            money.type="money";
+            money.name = (this.moneyId++).toString();
+            money.isPowerUp = true;
+            money.scaleX = 0.3;
+            money.scaleY = 0.3;
+            money.x = playerPos[0] + (Math.floor(xRand*100%2)===0 ? 1 : -1) * (2* xRand) * offsetx;
+            money.y = playerPos[1] + (Math.floor(yRand*100%2)===0 ? 1 : -1) * (2* yRand) * offsety;
+
+            baseLayer.addChild(money);
+        }
+        if (Math.random()>0.5) {
+            xRand = Math.random();
+            yRand = Math.random();
+            let speedBoost = new createjs.Sprite(projectileSheet, "speedBoost");
+            speedBoost.type="speedBoost";
+            speedBoost.name = (this.speedBoost++).toString();
+            speedBoost.isPowerUp = true;
+            speedBoost.scaleX = 0.3;
+            speedBoost.scaleY = 0.3;
+            speedBoost.x = playerPos[0] + (Math.floor(xRand*100%2)===0 ? 1 : -1) * (2* xRand) * offsetx;
+            speedBoost.y = playerPos[1] + (Math.floor(yRand*100%2)===0 ? 1 : -1) * (2* yRand) * offsety;
+
+            baseLayer.addChild(speedBoost);
+        }
+        if (Math.random() > 0.5){
+            xRand = Math.random();
+            yRand = Math.random();
+            let smashBuilding = new createjs.Sprite(projectileSheet, "smashBuilding");
+            smashBuilding.type="smashBuilding";
+            smashBuilding.name = (this.smashBuilding++).toString();
+            smashBuilding.isPowerUp = true;
+            smashBuilding.scaleX = 0.3;
+            smashBuilding.scaleY = 0.3;
+            smashBuilding.x = playerPos[0] + (Math.floor(xRand*100%2)===0 ? 1 : -1) * (2* xRand) * offsetx;
+            smashBuilding.y = playerPos[1] + (Math.floor(yRand*100%2)===0 ? 1 : -1) * (2* yRand) * offsety;
+
+            baseLayer.addChild(smashBuilding);
+        }
+
+    }
+}
+
 /* --------------------------------------------------------------------------------------------------------- API FUNCTIONS */
 /* GEO TIME FUNCTIONS */
-/**
- * returneaza timpul exact, dinamic, poate duce la variatii dese ale culorii daca se fataie jucatorul la stanga si la dreapta longitudinilor M15
- * @returns {number} = minutul si ora curenta a jocului la coordonatele actuale, pentru a fi eventula afisate intr-o parte a ecranului
- */
 
-function getCurrentTime(){
-    let offset=Math.floor(playerPos[0]/15);
-    if (offset<0) offset++;
-    let d=new Date();
-    let n=d.getUTCHours()+offset;
-    if (n<0) n=24-n;
-    if (n>=24) n=n-24;
-    return n*60+d.getUTCMinutes();
-}
-
-/**
- * TODO: ora data de API pt new york, washington si alte coordonate cu longitudine negativa nu pare corecta
- * /daca se considera necesar sa se adauge 1 daca Number(timeOffset.split(':')[0]) este mai mic ca 0
- */
-function setGameStartTime(){
-    //https://dev.virtualearth.net/REST/v1/timezone/61.768335,-158.808765?key=AqSqRw1EoXuQEC2NZKEEU3151TB16-jcJK_TiVYSHNd1m51x-JIdI2zMI2b5kwi7
-    let timeRequest="https://dev.virtualearth.net/REST/v1/timezone/"+playerPos[1]+","+playerPos[0]
-        +"?key=AqSqRw1EoXuQEC2NZKEEU3151TB16-jcJK_TiVYSHNd1m51x-JIdI2zMI2b5kwi7";
-    fetch(timeRequest)
-        .then((response) => {
-            return response.json();
-        })
-        .then((data) => {
-            try{
-                let timeOffset=data.resourceSets[0].resources[0].timeZone["utcOffset"];
-                var today = new Date();
-                today.setHours(today.getUTCHours() + Number(timeOffset.split(':')[0]));
-                gameStartTime=today.getHours()*60+today.getMinutes();
-            }
-            catch (e) {
-                gameStartTime=getCurrentTime();
-            }
-            if (gameStartTime<0||gameStartTime>24*60||isNaN(gameStartTime)||gameStartTime==null){
-                gameStartTime=getCurrentTime();
-            }
-            console.log(gameStartTime);
-            pageLoader.notifyCompleted('loadTime');
-        });
-
-    /**
-     * mai jos se afla varianta mai eficienta de determinare a orii prin cunostinte standard de geografie/google search
-     */
-    /*
-    let offset=Math.floor(playerPos[0]/15);
-    if (offset<0) offset++;
-    let d=new Date();
-    let n=d.getUTCHours()+offset;
-    if (n<0) n=24-n;
-    if (n>=24) n=n-24;
-    gameStartTime=n*60+d.getUTCMinutes(); //am pus minutul de inceput in gameStartTime
-    //TODO pentru eventuale operatii mai complexe pe timp, de retinut data completa de inceput a jocului,
-    // si de revizuit data de sfarsit a jocului
-
-     */
-}
-
-function setNightOverlay(){
-    luminosityOverlay.graphics
-        .beginRadialGradientFill(["rgba(63, 127, 191, 0.15)", "black"], [0, 1], offsetx, offsety, playerRadius, offsetx, offsety, playerRadius * 8)
-        .drawRect(0, 0, windowWidth, windowHeight);
-}
-
-/* GEO WEATHER FUNCTIONS */
-function getWeather(){
-    const openWeatherAccessToken="8fbb3329e2b667344c3392d6aea9362e";
-    let weatherRequest="https://api.openweathermap.org/data/2.5/weather?lat="+playerPos[1]+"&lon="+playerPos[0]
-        +"&appid="+openWeatherAccessToken;
-    fetch(weatherRequest)
-        .then((response) => {
-            return response.json();
-        })
-        .then((data) => {
-            gameWeather=data;
-            pageLoader.notifyCompleted('loadWeather');
-        });
+function getServerTimeAndWeather(){
+    let timeRequest= ORIGIN + "/api/environment?lat="+playerPos[1]+"&long="+playerPos[0];
+    fetch(timeRequest).
+    then((response) => {
+        return response.json();
+    }).then((data) => {
+        gameStartTime=data.time;
+        gameWeather=data.weather;
+        //console.log("gameStartTime", gameStartTime);
+        //console.log("gameWeather", gameWeather);
+        document.getElementById("loadTimeAndWeatherWheel").innerHTML = "&#x2714;";
+        document.getElementById("loadTimeAndWeatherWheel").className = "";
+        pageLoader.notifyCompleted('loadTimeAndWeather');
+    });
 }
 
 /* GEO MAP FUNCTIONS */
@@ -795,7 +1111,7 @@ function setMap() {
     mapboxgl.accessToken = 'pk.eyJ1IjoiZmlyc3RzdGVmIiwiYSI6ImNrNzRneHkzbTBpaDQzZnBkZDY3dXRjaDQifQ.g6l-GFeBB2cUisg6MqweaA';
     map = new mapboxgl.Map({
         container: 'map',
-        style: 'mapbox://styles/mapbox/streets-v11',
+        style: 'mapbox://styles/mapbox/streets-v11?optimize=true',
         center: [playerPos[0], playerPos[1]],
         zoom: 20
     });
@@ -807,31 +1123,44 @@ function setMap() {
             },
             true
         );
-        //TODO: request doar cand se paraseste view-portul curent
-        setInterval(function() {
+        let searchCallback = function() {
+            document.getElementById("map").hidden = false;
             let features = map.queryRenderedFeatures({/*sourceLayer: ["road", "building"]*/ });
-            if (this.loadedFirstMap === undefined){
-                this.loadedFirstMap = true;
-                //console.log(features);
-                pageLoader.notifyCompleted('loadMap');
-            }
-
-            if (!pageLoader.isFinished())
-                return;
-
-            features.forEach(function(feature) {
-                if (validateAndAddId(feature.geometry)){
+            document.getElementById("map").hidden = true;
+            features.forEach(function (feature) {
+                if (buildingsLayer !== undefined && roadsLayer !== undefined && validateAndAddId(feature.geometry)) {
                     drawFeature(feature);
-                    if (feature.sourceLayer === "building"){
-                        buildings.push(feature);
+                    feature.geometry.collidable=true;
+                    if (ticks<120)
+                        feature.geometry.collidable=false;
+                    if (feature.sourceLayer === "building") {
+                        buildings.push(buildingAdder(feature.geometry));
                     }
                 }
             });
-            //let b = baseLayer.getBounds();
-            //baseLayer.cache(b.x - b.width / 2, b.y - b.height / 2, b.width, b.height, scale);
-        }, 1000);
+        };
+        document.getElementById("loadMapWheel").innerHTML = "&#x2714;";
+        document.getElementById("loadMapWheel").className = "";
+        pageLoader.notifyCompleted('loadMap');
+        searchCallback();
+        setInterval(searchCallback, 1000); //TODO: request doar cand se paraseste view-portul curent
     });
     map["keyboard"].disable();
+}
+
+function downloadGPX(){
+    let text = GPXString;
+    let filename = "track.gpx";
+    let element = document.createElement('a');
+    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+    element.setAttribute('download', filename);
+
+    element.style.display = 'none';
+    document.body.appendChild(element);
+
+    element.click();
+
+    document.body.removeChild(element);
 }
 
 /* --------------------------------------------------------------------------------------------------------- GAME MAP FUNCTIONS */
@@ -893,7 +1222,7 @@ function drawPointArray(object, array, fill = false, color = "red") {
     array.forEach(function(point) {
         let x = getCoordinateX(point[0]);
         let y = getCoordinateY(point[1]);
-        if (x != undefined){
+        if (x !== undefined){
             if (x < mx)
                 mx = x;
             if (x > Mx)
@@ -902,7 +1231,7 @@ function drawPointArray(object, array, fill = false, color = "red") {
         else{
             console.log("err on getcordx", point[0]);
         }
-        if (y != undefined){
+        if (y !== undefined){
             if (y < my)
                 my = y;
             if (y > My)
@@ -918,10 +1247,11 @@ function drawPointArray(object, array, fill = false, color = "red") {
     return [mx, my, Mx, My];
 }
 
-function drawRoad(geometry, color) {
+function drawRoad(geometry, color, name) {
     let road = new createjs.Shape();
     road.tickEnabled = false;
     road.graphics.setStrokeStyle(30,"round").beginStroke(color);
+    road.name=name;
 
     if (geometry.type === "MultiLineString") {
         geometry.coordinates.forEach(function(array) {
@@ -959,15 +1289,19 @@ function drawPolygon(geometry, fill = false, color, name) {
 function drawFeature(feature) {
     switch (feature.sourceLayer) {
         case "road": {
-            drawRoad(feature.geometry, roadsColor);
+            drawRoad(feature.geometry, roadsColor, feature.geometry.hash);
             break;
         }
         case "building": {
-            drawPolygon(feature.geometry, false, buildingsColor);
+            if (ticks<120)
+                drawPolygon(feature.geometry, false, buildingsColor2, feature.geometry.hash);
+            else
+                drawPolygon(feature.geometry, false, buildingsColor, feature.geometry.hash);
+
             break;
         }
         case "water": {
-            drawPolygon(feature.geometry, true, waterColor);
+            drawPolygon(feature.geometry, true, waterColor, feature.geometry.hash);
             break;
         }
         default:
@@ -975,29 +1309,58 @@ function drawFeature(feature) {
     }
 }
 
+function validateAndAddId(obj){
+    let id = hash(obj);
+    if (polygonShapesIdSet.has(id))
+        return false;
+    polygonShapesIdSet.add(id);
+    obj.hash=id;
+    return true;
+}
+
+
+function buildingAdder(building){
+    let mx=MAX_COORDINATE; let my=MAX_COORDINATE;
+    let Mx=-MAX_COORDINATE; let My=-MAX_COORDINATE;
+    if (building.type==="Polygon")
+        building.coordinates[0].forEach(point => {
+            if (point[0]>Mx) Mx=point[0];
+            if (point[0]<mx) mx=point[0];
+            if (point[1]>My) My=point[1];
+            if (point[1]<my) my=point[1];
+        });
+    else
+        building.coordinates.forEach(polygon =>{
+            polygon[0].forEach(point => {
+                if (point[0]>Mx) Mx=point[0];
+                if (point[0]<mx) mx=point[0];
+                if (point[1]>My) My=point[1];
+                if (point[1]<my) my=point[1];
+            });
+        });
+    building.Mx=Mx;
+    building.My=My;
+    building.mx=mx;
+    building.my=my;
+    return building;
+}
+
+function cleanFarAwayBuildings(){
+
+    for (let i=0; i<buildings.length; i++){
+        if (!buildingSquareCollision(playerGetPos()[0], playerGetPos()[1], buildingsBoxX, buildingsBoxY, buildings[i])) {
+            buildingsLayer.removeChild(buildingsLayer.getChildByName(buildings[i].hash))
+            polygonShapesIdSet.delete(buildings[i].hash);
+            buildings.splice(i, 1);
+        }
+    }
+}
+
 /* --------------------------------------------------------------------------------------------------------- GAME COLLISIONS FUNCTIONS */
 
 //TODO: remove this if not needed
 function isPolygonCollidingWithBuildings(target){
-    if (buildings.length !== 0) {
-        for (let i=0; i<buildings.length; i++){
-            if (buildings[i].geometry.type === "MultiPolygon"){
-                for (let j=0; j<buildings[i].geometry.coordinates.length; j++){
-                    for (let k=0; k<buildings[i].geometry.coordinates[j].length; k++){
-                        let x = greinerHormann.intersection(getScreenCoordinates(buildings[i].geometry.coordinates[j][k]), target);
-                        if (x!=null)
-                            return true;
-                    }
-                }
-            }else{
-                for (let j=0; j<buildings[i].geometry.coordinates.length; j++){
-                    let x=greinerHormann.intersection(getScreenCoordinates(buildings[i].geometry.coordinates[j]), target);
-                    if (x!=null)
-                        return true;
-                }
-            }
-        }
-    }
+
     return false;
 }
 
@@ -1027,9 +1390,9 @@ function pointLineDistance(x0, y0, a, b, c){
     return [(b*(b*x0-a*y0)-a*c)/(a*a+b*b), (a*(-b*x0+a*y0)-b*c)/(a*a+b*b)];
 }
 function distance(x1, y1, x2, y2, x3, y3){
-    let x=0, y=0;
-    let val1=0, val2=0, val3=0;
-    if (x2==x3){
+/*    let x=0, y=0;
+    let val1=0, val2=0, val3=0;*/
+    if (x2===x3){
         if (y1<=Math.max(y2, y3)&&y1>=Math.min(y2, y3))
             return Math.abs(x1-x3);
         return Math.min(distanceBetweenPoints(x1, y1, x2, y2), distanceBetweenPoints(x1, y1, x3, y3));
@@ -1069,17 +1432,32 @@ function collision(x, y, radius, coords, type){
 }
 
 /** returns true if there is no collision */
-function checkCollisionWithBuildings(x, y, radius){
+function checkCollisionWithBuildings(x, y, radius, remove=0){
     for (let i=0; i<buildings.length; i++){
-        let coords=buildings[i].geometry.coordinates;
-        if (collision(x, y, radius, coords, buildings[i].geometry.type))
+        if (!buildingSquareCollision(x,y,radius,radius,buildings[i])||buildings[i].collidable===false)
+            continue;
+        let coords=buildings[i].coordinates;
+        if (collision(x, y, radius, coords, buildings[i].type)) {
+            if (remove === 1 && smashesLeft>0) {
+                smashesLeft--;
+                buildings[i].collidable = false;
+                buildingsLayer.getChildByName(buildings[i].hash).graphics._fill.style=buildingsColor2;
+                return true;
+            }
             return false;
+        }
     }
     return true;
 }
 
-//TODO: the function should be named checkProjectileCollisionWithMonsters
-function checkCollisionWithMonsters(x,y,radius){
+/** returns true if the player is inside the building's square */
+function buildingSquareCollision(x,y, radiusX, radiusY,  building){
+    // console.log("mx", getCoordinateX(building.mx), "x", x, "Mx", getCoordinateX(building.Mx));
+    // console.log("my", getCoordinateY(building.my), "y", y, "My", getCoordinateY(building.My));
+    return !(x > getCoordinateX(building.Mx) + radiusX || x < getCoordinateX(building.mx) - radiusX || y < getCoordinateY(building.My) - radiusY || y > getCoordinateY(building.my) + radiusY);
+}
+
+function checkProjectileCollisionWithMonsters(x,y,radius){
     for (let i=0; i<monsterLayer.children.length; i++) {
         let sprite = monsterLayer.children[i];
         if (sprite.isMonster === true) {
@@ -1088,6 +1466,9 @@ function checkCollisionWithMonsters(x,y,radius){
                 if (sprite.monsterHP <= 0) {
                     nrOfMonsters--;
                     Monster.removeMonsterWithId(sprite.name);
+                    monstersKilled++;
+                    totalPoints=totalPoints+5*600*(ticks/monsterSpawner+1);
+                    updatePlayerTotalPoints();
                 }
                 return false;
             }
@@ -1108,13 +1489,9 @@ function checkPlayerCollisionWithMonsters(x,y,radius){
     return true;
 }
 
-function checkMonsterCollisionWithPlayer(x,y, monsterRadius, collisionDelta=0){
-    return Math.pow(playerGetPos()[0] - x, 2) + Math.pow(playerGetPos()[1] - y, 2) > Math.pow(monsterRadius + playerRadius + collisionDelta, 2);
-}
-
-
-function checkProjectileCollisionWithPlayer(x,y, monsterRadius, collisionDelta=0){
-    return Math.pow(playerGetPos()[0] - x, 2) + Math.pow(playerGetPos()[1] - y, 2) > Math.pow(monsterRadius + playerRadius + collisionDelta, 2);
+/** Returns false if (x,y) is closer than radius to player */
+function checkCircleCollisionWithPlayer(x,y, radius, collisionDelta=0){
+    return Math.pow(playerGetPos()[0] - x, 2) + Math.pow(playerGetPos()[1] - y, 2) > Math.pow(radius + playerRadius + collisionDelta, 2);
 }
 
 /* --------------------------------------------------------------------------------------------------------- UI FUNCTIONS */
@@ -1124,6 +1501,167 @@ function updatePlayerLifeBar() {
     if (percent < 0)
         percent = 0;
     playerLifeBar.style.width = percent.toString() + '%';
+}
+
+function updatePlayerTotalPoints() {
+    let points=(totalPoints/600).toFixed(2);
+    playerTotalPoints.innerText= 'HeroPoints: ' + points.toString();
+}
+
+function updateScoreBoard() {
+    fetch(ORIGIN + "/api/livescores?count=7")
+        .then((response) => {
+            return response.json();
+        })
+        .then((playerList) => {
+            let domString = "<table class=\"topazCells\">";
+            playerList.forEach((player) => {
+                domString = domString + "<tr><td>" + player.username + "</td><td>"+ player.currentPoints.toString() +"</td></tr>";
+            });
+            domString += "</table>";
+            scoreBoards.innerHTML = domString;
+        });
+}
+
+function updateNearbyMessage() {
+    fetch(ORIGIN + "/api/nearbymessage?lat="+map.transform._center.lat+"&long="+map.transform._center.lng)
+        .then((response) => {
+            return response.json();
+        })
+        .then((message) => {
+            if (message.name === undefined)
+            {
+                message.name = '';
+            }
+            else{
+                if (nearbyMessageName.innerHTML === "🙤 " + message.name +" 🙦")
+                    return;
+                message.name = "&#128612; " + message.name + " &#128614;";
+
+            }
+            if (message.topText === undefined)
+                message.topText = '';
+            if (message.bottomText === undefined)
+                message.bottomText = '';
+
+            nearbyMessageDescTop.innerHTML = message.topText;
+            nearbyMessageDescBottom.innerHTML = message.bottomText;
+            nearbyMessageName.innerHTML = message.name;
+        });
+}
+
+function getLeaderBoards(myScore) {
+    fetch(ORIGIN + "/api/leaderboards?count=8&myScore=" + myScore)
+        .then((response) => {
+            return response.json();
+        })
+        .then((boards) => {
+            let tableContent = '';
+            boards.players.forEach((playerObj) => {
+                tableContent += `<tr><td>${playerObj.username}</td><td>${playerObj.score}</td></tr>`;
+            });
+            document.getElementById("leaderBoards").innerHTML = tableContent;
+            document.getElementById("yourPlace").innerHTML = "Your place: " + boards.myPlace;
+            document.getElementById("yourScore").innerHTML = "Your score: "+ myScore;
+        });
+}
+
+function toggleScreen() {
+    let gameScreen = document.getElementById("gameContainer");
+    let endScreen = document.getElementById("endScreenContainer");
+    if (gameScreen.style.display === "block") {
+        gameScreen.style.display = "none";
+        endScreen.style.display = "flex";
+    } else {
+        gameScreen.style.display = "block";
+        endScreen.style.display = "none";
+    }
+}
+
+function setNightOverlay(on) {
+    let nightChild = stage.getChildByName("luminosityOverlay");
+    if (nightChild !== null){
+        stage.removeChild(nightChild);
+    }
+    if (on === true) {
+        luminosityOverlay = new createjs.Shape();
+        luminosityOverlay.graphics
+            .beginRadialGradientFill(["rgba(54,118,191,0.15)", "rgba(6,29,41,0.9)"], [0, 1], offsetx, offsety,
+                playerRadius, offsetx, offsety, playerRadius * 10)
+            .drawRect(0, 0, windowWidth, windowHeight);
+        luminosityOverlay.name = "luminosityOverlay";
+        stage.addChildAt(luminosityOverlay, 4);
+    }
+}
+
+function setWeatherOverlay(weather) {
+    let weatherChild = stage.getChildByName("weatherOverlay");
+    if (weatherChild !== null){
+        stage.removeChild(weatherChild);
+    }
+    weatherSheet = new createjs.SpriteSheet({ //this will be replaced with weather
+        framerate: 8,
+        "images": [resourceLoader.getResult("weather")],
+        "frames": {"height": 32, "width": 32, "regX": 0, "regY": 0, "spacing": 10, "margin": 0},
+        "animations": {
+            "rain": [0, 12, "rain", 2],
+            "snow": [13, 19, "snow", 1]
+        }
+    });
+
+    if (weather === "Rain") {
+        weatherOverlay = new createjs.Sprite(weatherSheet, "rain");
+    } else if (weather === "Snow") {
+        weatherOverlay = new createjs.Sprite(weatherSheet, "snow");
+    }
+    else {
+        return;
+    }
+    weatherOverlay.scaleX = 1;
+    weatherOverlay.scaleY = 1;
+    weatherOverlay.name = "weatherOverlay";
+
+    if (this.offscreenCanvas === undefined) {
+        this.offscreenCanvas = document.createElement('canvas');
+    }
+    this.offscreenCanvas.width = 32;
+    this.offscreenCanvas.height = 32;
+
+    let thisRef = this;
+    weatherOverlay.draw = function (ctx, ignoreCache) {
+        if (this.DisplayObject_draw(ctx, ignoreCache)) {
+            return true;
+        }
+        this._normalizeFrame();
+        let o = this.spriteSheet.getFrame(this._currentFrame | 0);
+        if (!o) {
+            return false;
+        }
+        let rect = o.rect;
+        if (rect.width && rect.height) {
+            let offscreenContext = thisRef.offscreenCanvas.getContext('2d');
+            offscreenContext.clearRect(0, 0, thisRef.offscreenCanvas.width, thisRef.offscreenCanvas.height);
+            offscreenContext.drawImage(o.image, rect.x, rect.y, rect.width, rect.height, -o.regX, -o.regY, rect.width, rect.height);
+            ctx.beginPath();
+            ctx.rect(0, 0, windowWidth, windowHeight);
+            ctx.fillStyle = ctx.createPattern(thisRef.offscreenCanvas, 'repeat');
+            ctx.save();
+            ctx.translate(-player.centerX(), -player.centerY());
+            ctx.fill();
+            ctx.restore();
+        }
+        return true;
+    };
+    stage.addChildAt(weatherOverlay, 3);
+}
+
+function updateWeatherOverlay(){
+    if(this.initialDisplay !== undefined){
+        getServerTimeAndWeather();
+    }
+    this.initialDisplay = true;
+    setWeatherOverlay(gameWeather.weather[0].main);
+    setNightOverlay(gameStartTime < 420 || gameStartTime > 1320);
 }
 
 /* --------------------------------------------------------------------------------------------------------- UTILS */
@@ -1147,12 +1685,15 @@ function hash(obj){
     return hash;
 }
 
-function validateAndAddId(obj){
-    let id = hash(obj);
-    if (polygonShapesIdSet.has(id))
+function isLocalStorageSupported() {
+    try {
+        const key = "__some_random_key__";
+        localStorage.setItem(key, key);
+        localStorage.removeItem(key);
+        return true;
+    } catch (e) {
         return false;
-    polygonShapesIdSet.add(id);
-    return true;
+    }
 }
 
 /* --------------------------------------------------------------------------------------------------------- NOTES
@@ -1167,7 +1708,7 @@ function validateAndAddId(obj){
 //TODO: monster mini health-bar
 //TODO: we might wanna add a function to subtract from player the damage, but in this function we select only the highest damage in the recent seconds
 //TODO: add grass
-//TODO: add loading screen
+//TODO: fewer calls to playerGetPos
 
 Polygon has this format: Main[ Array[ Point[], Point[]... ], ...]
 MultiPolygon has this format: Main[ Polygon[Array[ Point[], Point[]... ], ...], ...]
