@@ -12,4 +12,6 @@ Acest proiect reprezinta de asemenea tema noastra pentru proiectul ce il avem de
 
 [01.05.2020] Am adaugat sursele jocului si videoclip-ul, toate commit-urile sunt pe repo-ul de mai sus. Jocul este disponibil la adresa https://firststef.tools
 
+# Running
+
 You can open the server by going to src/server and running `npm start`. You will also need to uncomment this line (https://github.com/firststef/RealQuest/blob/48afb9141de79effc462fa92d7a59b1cd2b6bc72/src/client/game.js#L15) accordingly for avoiding CORS. The site will be available at http://localhost.
