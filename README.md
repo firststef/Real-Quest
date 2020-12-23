@@ -10,7 +10,7 @@ This project also represents our entry for an assignment project to the Web Tech
 
 Acest proiect reprezinta de asemenea tema noastra pentru proiectul ce il avem de facut pentru cursul de Tehnologii Web de la UAIC FII, repo-ul complet, cu toate commit-urile poate fi gasit la adresa: https://github.com/firststef/twproj
 
-[01.05.2020] Am adaugat sursele jocului si videoclip-ul, toate commit-urile sunt pe repo-ul de mai sus. Jocul este disponibil la adresa https://firststef.tools
+[01.05.2020] Am adaugat sursele jocului si videoclip-ul, toate commit-urile sunt pe repo-ul de mai sus. Jocul este disponibil la adresa http://realquest.firststef.repl.co/
 
 # Running
 
